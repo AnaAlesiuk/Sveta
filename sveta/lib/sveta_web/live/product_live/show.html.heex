@@ -1,0 +1,51 @@
+<h1>Show Product</h1>
+
+<%= if @live_action in [:edit] do %>
+  <.modal return_to={Routes.product_show_path(@socket, :show, @product)}>
+    <.live_component
+      module={SvetaWeb.ProductLive.FormComponent}
+      id={@product.id}
+      title={@page_title}
+      action={@live_action}
+      product={@product}
+      return_to={Routes.product_show_path(@socket, :show, @product)}
+    />
+  </.modal>
+<% end %>
+
+<ul>
+
+  <li>
+    <strong>Product:</strong>
+    <%= @product.product_id %>
+  </li>
+
+  <li>
+    <strong>Src:</strong>
+    <%= @product.src %>
+  </li>
+
+  <li>
+    <strong>Title:</strong>
+    <%= @product.title %>
+  </li>
+
+  <li>
+    <strong>Gender:</strong>
+    <%= @product.gender %>
+  </li>
+
+  <li>
+    <strong>Category:</strong>
+    <%= @product.category %>
+  </li>
+
+  <li>
+    <strong>Part:</strong>
+    <%= @product.part %>
+  </li>
+
+</ul>
+
+<span><%= live_patch "Edit", to: Routes.product_show_path(@socket, :edit, @product), class: "button" %></span> |
+<span><%= live_redirect "Back", to: Routes.product_index_path(@socket, :index) %></span>

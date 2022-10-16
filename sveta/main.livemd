@@ -1,0 +1,386 @@
+# Data preparation
+
+```elixir
+Mix.install([
+  {:poison, "~> 5.0"},
+  {:httpoison, "~> 1.8"},
+  {:explorer, "~> 0.1.1"},
+  {:kino_db, "~> 0.1.1"},
+  {:postgrex, "~> 0.16.3"},
+  {:kino, "~> 0.6.1"},
+  {:kino_vega_lite, "~> 0.1.1"}
+])
+```
+
+## 0. Setup env
+
+<!-- livebook:{"attrs":{"database":"sveta_dev","hostname":"localhost","password":"postgres","port":5432,"type":"postgres","username":"postgres","variable":"conn"},"kind":"Elixir.KinoDB.ConnectionCell","livebook_object":"smart_cell"} -->
+
+```elixir
+opts = [
+  hostname: "localhost",
+  port: 5432,
+  username: "postgres",
+  password: "postgres",
+  database: "sveta_dev"
+]
+
+{:ok, conn} = Kino.start_child({Postgrex, opts})
+```
+
+<!-- livebook:{"attrs":{"connection":{"type":"postgres","variable":"conn"},"query":"select * from products limit 100","result_variable":"result","timeout":null},"kind":"Elixir.KinoDB.SQLCell","livebook_object":"smart_cell"} -->
+
+```elixir
+result = Postgrex.query!(conn, "select * from products limit 100", [])
+```
+
+* Start HTTP service
+
+```elixir
+HTTPoison.start()
+```
+
+* Create alias for the Explorer library to make code less verbose
+
+```elixir
+alias Explorer.DataFrame, as: DF
+alias Explorer.Series, as: DS
+{DF, DS}
+```
+
+* Initialize the configurations
+
+```elixir
+shop_name = "Ketsol"
+shop_url = "https://www.ketsol.com/"
+data_dir = "data/#{shop_name}"
+api_url = "http://localhost:4000"
+build_api? = false
+```
+
+## 1. Load data
+
+```elixir
+raw_products =
+  "#{shop_url}/products.json?limit=150"
+  |> HTTPoison.get!()
+  |> Map.fetch!(:body)
+  |> Poison.decode!()
+  |> Map.fetch!("products")
+```
+
+To extract url and product_id for each image
+
+```elixir
+images =
+  raw_products
+  |> Enum.flat_map(&Map.fetch!(&1, "images"))
+  |> Enum.map(&Map.take(&1, ["src", "product_id"]))
+```
+
+## 2. Data visualization
+
+```elixir
+products =
+  raw_products
+  |> Enum.map(fn %{"id" => id, "title" => title, "product_type" => product_type, "tags" => tags} ->
+    %{
+      product_id: "#{id}",
+      title: title,
+      details: "#{title} #{product_type} #{Enum.join(tags, " ")}"
+    }
+  end)
+```
+
+```elixir
+details =
+  products
+  |> Enum.map(&Map.fetch!(&1, :details))
+  |> Enum.flat_map(&String.split(&1))
+  |> Enum.frequencies()
+  |> Enum.map(fn {tag, count} -> %{tag: tag, count: count} end)
+  |> Enum.filter(fn %{count: count} -> count > 3 end)
+  |> Enum.sort_by(&Map.fetch!(&1, :count), :desc)
+```
+
+<!-- livebook:{"attrs":{"chart_title":"Details","height":null,"layers":[{"chart_type":"bar","color_field":null,"color_field_aggregate":null,"color_field_type":null,"data_variable":"details","x_field":"count","x_field_aggregate":null,"x_field_type":"quantitative","y_field":"tag","y_field_aggregate":null,"y_field_type":null}],"vl_alias":"Elixir.VegaLite","width":null},"kind":"Elixir.KinoVegaLite.ChartCell","livebook_object":"smart_cell"} -->
+
+```elixir
+VegaLite.new(title: "Details")
+|> VegaLite.data_from_values(details, only: ["count", "tag"])
+|> VegaLite.mark(:bar)
+|> VegaLite.encode_field(:x, "count", type: :quantitative)
+|> VegaLite.encode_field(:y, "tag")
+```
+
+## 3. Clean data
+
+* Create filters to extract classes
+
+```elixir
+defmodule Filter do
+  import String
+
+  def gender(text) do
+    text = downcase(text)
+
+    cond do
+      contains?(text, "women") -> "women"
+      contains?(text, "men") -> "men"
+      contains?(text, "unisex") -> "unisex"
+      true -> nil
+    end
+  end
+
+  def category(text) do
+    text = downcase(text)
+
+    cond do
+      contains?(text, "t-shirt") -> "t-shirt"
+      contains?(text, "tee") -> "t-shirt"
+      contains?(text, "tank") -> "tank"
+      contains?(text, "sweatshirt") -> "sweater"
+      contains?(text, "shirt") -> "shirt"
+      contains?(text, "dress") -> "dress"
+      contains?(text, "polo") -> "polo"
+      contains?(text, "blazer") -> "blazer"
+      contains?(text, "trouser") -> "trouser"
+      contains?(text, "hoodie") -> "hoodie"
+      contains?(text, "sweater") -> "sweater"
+      contains?(text, "pullover") -> "sweater"
+      contains?(text, "short") -> "short"
+      contains?(text, "pant") -> "pant"
+      contains?(text, "dress") -> "dress"
+      contains?(text, "jacket") -> "jacket"
+      contains?(text, "blouse") -> "blouse"
+      contains?(text, "blouson") -> "blouse"
+      contains?(text, "cardigan") -> "cardigan"
+      true -> nil
+    end
+  end
+
+  def part(text) do
+    text = downcase(text)
+
+    cond do
+      contains?(text, "bottom") -> "bottom"
+      contains?(text, "top") -> "top"
+      contains?(text, "up") -> "top"
+      true -> nil
+    end
+  end
+end
+```
+
+* Clean e-commerce data and put it in a dataframe
+
+```elixir
+products_df =
+  products
+  |> DF.from_rows()
+  |> DF.mutate(gender: &DS.transform(&1["details"], fn i -> Filter.gender(i) end))
+  |> DF.mutate(gender: &DS.fill_missing(&1["gender"], "unisex"))
+  |> DF.mutate(category: &DS.transform(&1["details"], fn i -> Filter.category(i) end))
+  |> DF.mutate(category: &DS.fill_missing(&1["category"], "unknown"))
+  |> DF.mutate(part: &DS.transform(&1["details"], fn i -> Filter.part(i) end))
+  |> DF.mutate(part: &DS.fill_missing(&1["part"], "unknown"))
+  |> DF.select(["details"], :drop)
+```
+
+```elixir
+DF.table(products_df)
+```
+
+```elixir
+exported_df = DF.to_map(products_df)
+```
+
+<!-- livebook:{"attrs":{"chart_title":"cat_vis","height":null,"layers":[{"chart_type":"bar","color_field":"gender","color_field_aggregate":null,"color_field_type":null,"data_variable":"exported_df","x_field":"category","x_field_aggregate":null,"x_field_type":null,"y_field":"__count__","y_field_aggregate":null,"y_field_type":null}],"vl_alias":"Elixir.VegaLite","width":null},"kind":"Elixir.KinoVegaLite.ChartCell","livebook_object":"smart_cell"} -->
+
+```elixir
+VegaLite.new(title: "cat_vis")
+|> VegaLite.data_from_values(exported_df, only: ["category", "gender"])
+|> VegaLite.mark(:bar)
+|> VegaLite.encode_field(:x, "category")
+|> VegaLite.encode(:y, aggregate: :count)
+|> VegaLite.encode_field(:color, "gender")
+```
+
+* Create image info into dataframe
+
+```elixir
+images_df =
+  images
+  |> DF.from_rows()
+  |> DF.mutate(product_id: &DS.transform(&1["product_id"], fn i -> "#{i}" end))
+```
+
+```elixir
+DF.table(images_df)
+```
+
+```elixir
+df = DF.join(images_df, products_df)
+```
+
+```elixir
+DF.table(df)
+```
+
+* Define the path for the backup file
+
+```elixir
+data_dir |> File.mkdir_p!()
+file_name = DateTime.utc_now() |> DateTime.to_string()
+file_path = "#{data_dir}/#{file_name}"
+```
+
+* Save the dataframe in a json backup file for API
+
+```elixir
+df |> DF.write_ndjson("#{file_path}.ndjson")
+```
+
+* Save the dataframe in a csv backup file
+
+```elixir
+df |> DF.write_csv("#{file_path}.csv")
+```
+
+## 3. Build API and database
+
+* Check for unsaved changes on the server's code
+
+```elixir
+"git status" |> System.shell(into: IO.stream())
+```
+
+* Define the tables columns
+
+```elixir
+columns = Enum.zip(DF.names(df), DF.dtypes(df))
+```
+
+```elixir
+params =
+  columns
+  |> Enum.map(fn {key, type} -> "#{key}:#{type}" end)
+  |> Enum.join(" ")
+```
+
+* Generate json api and database table
+
+```elixir
+if build_api? do
+  "mix phx.gen.json Shopify Product products #{params}"
+  |> System.shell(into: IO.stream())
+end
+```
+
+* Generate user interfaces
+
+```elixir
+if build_api? do
+  "mix phx.gen.live Shopify Product products #{params} --no-context --no-schema"
+  |> System.shell(into: IO.stream())
+end
+```
+
+* Migrate server's database
+
+```elixir
+if build_api? do
+  "mix ecto.migrate" |> System.shell(into: IO.stream())
+end
+```
+
+* Verify the changes made to the server's code
+
+```elixir
+"git status"
+|> System.shell(into: IO.stream())
+```
+
+* Save the changes made to the server's code
+
+```elixir
+if build_api? do
+  "git add . && git commit -m \"add product api\""
+  |> System.shell(into: IO.stream())
+end
+```
+
+## 4. Upload cleaned data
+
+* Load the backup file content
+
+```elixir
+"#{file_path}.ndjson"
+|> File.read!()
+|> String.split("\n")
+```
+
+```elixir
+content =
+  "#{file_path}.ndjson"
+  |> File.read!()
+  |> String.split("\n")
+  # \n - go to the new line
+  |> Enum.map(&"{\"product\":#{&1}}")
+
+# we precise "product" so API can understand that we're talking about a specific object
+```
+
+* Upload products
+
+```elixir
+content
+|> Enum.map(fn product ->
+  HTTPoison.post!(
+    "#{api_url}/api/products",
+    product,
+    [{"Content-Type", "application/json"}]
+  )
+end)
+|> Enum.map(& &1.body)
+```
+
+## 5. Explore data
+
+* Connect to the database
+
+<!-- livebook:{"attrs":{"database":"sveta_dev","hostname":"localhost","password":"postgres","port":5432,"type":"postgres","username":"postgres","variable":"conn"},"kind":"Elixir.KinoDB.ConnectionCell","livebook_object":"smart_cell"} -->
+
+```elixir
+opts = [
+  hostname: "localhost",
+  port: 5432,
+  username: "postgres",
+  password: "postgres",
+  database: "sveta_dev"
+]
+
+{:ok, conn} = Kino.start_child({Postgrex, opts})
+```
+
+* Select product types to define the classes
+
+<!-- livebook:{"attrs":{"connection":{"type":"postgres","variable":"conn"},"query":"select distinct category from products","result_variable":"product_types","timeout":null},"kind":"Elixir.KinoDB.SQLCell","livebook_object":"smart_cell"} -->
+
+```elixir
+product_types = Postgrex.query!(conn, "select distinct category from products", [])
+```
+
+* Create directory for each class. In each directory download the pictures with the correct product type:
+
+1. get the classes: `select distinct product_type from products`
+2. create a directory for a class: `File.mkdir_p!` -> use *p* to create a folder in a folder
+3. get images of specific class: `select src from products where product_type='product_class'`
+4. download an image: `HTTPoison.get! image url`
+5. save the downloaded image: `File.write!`
+
+<!-- livebook:{"attrs":{"connection":{"type":"postgres","variable":"conn"},"query":"select title from products where category='unknown'","result_variable":"result4","timeout":null},"kind":"Elixir.KinoDB.SQLCell","livebook_object":"smart_cell"} -->
+
+```elixir
+result4 = Postgrex.query!(conn, "select title from products where category='unknown'", [])
+```
