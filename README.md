@@ -24,7 +24,7 @@ As each Shopify store puts the information about the product in different places
 
 And the best way is to use the idea of a search engine. For that, I grouped relevant sources of information like product_id and title, and in the case of details, I grouped them into title, product_type, and tags after that, I can use this to extract common keywords such as gender, colour and so on.
 
-Here I built my pipeline using a pipe operator where each function's result is the next function's argument. I'm using the function of enum module to count all the words that are in every description of products(направить мышку на любую функцию, чтобы продемонстрировать сразу документацию)
+Here I built my pipeline using a pipe operator where each function's result is the next function's argument. I'm using the function of enum module to count all the words that are in every description of products.
 
 With this smart cell, we can easily make a graph of all the counted words, and by looking at it, I started to decide which classes are better to take.
 
